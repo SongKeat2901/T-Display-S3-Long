@@ -1,0 +1,8 @@
+Initial commit
+
+# Conflicts:
+#	examples/QWIIC_Sensor/pins_config.h
+#	examples/TFT/pins_config.h
+#	examples/factory/factory.ino
+#	examples/touch/pins_config.h
+#	platformio.ini

@@ -1,0 +1,19 @@
+SET(SOURCES screens/ui_MainScreen.c
+    screens/ui_SettingScreen.c
+    ui.c
+    components/ui_comp_hook.c
+    ui_helpers.c
+    ui_events.c
+    images/ui_img_2089747144.c
+    images/ui_img_1233654078.c
+    images/ui_img_1683789101.c
+    images/ui_img_1530343224.c
+    images/ui_img_97407014.c
+    images/ui_img_1992534686.c
+    images/ui_img_2251575.c
+    images/ui_img_setting_png.c
+    images/ui_img_249472744.c
+    images/ui_img_806972598.c
+    images/ui_img_1111506397.c)
+
+add_library(ui ${SOURCES})

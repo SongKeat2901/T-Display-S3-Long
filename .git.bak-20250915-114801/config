@@ -1,0 +1,18 @@
+[core]
+	repositoryformatversion = 0
+	filemode = true
+	bare = false
+	logallrefupdates = true
+	ignorecase = true
+	precomposeunicode = true
+[remote "upstream"]
+	url = https://github.com/Xinyuan-LilyGO/T-Display-S3-Long.git
+	fetch = +refs/heads/*:refs/remotes/upstream/*
+	pushurl = DISABLE
+[branch "master"]
+	remote = origin
+	vscode-merge-base = origin/master
+	merge = refs/heads/master
+[remote "origin"]
+	url = https://github.com/SongKeat2901/T-Display-S3-Long.git
+	fetch = +refs/heads/*:refs/remotes/origin/*
