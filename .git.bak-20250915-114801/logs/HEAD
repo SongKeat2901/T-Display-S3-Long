@@ -1,8 +1,0 @@
-0000000000000000000000000000000000000000 dae7710ed533afbc14d0b81d4d067d447d3af3ac Song Keat <songkeat@MacBook-Air.local> 1714128689 +0800	clone: from https://github.com/Xinyuan-LilyGO/T-Display-S3-Long.git
-dae7710ed533afbc14d0b81d4d067d447d3af3ac 4d161511e5413dbda4f24a8b3ecd01b56a288980 Song Keat <songkeat@gmail.com> 1757899863 +0800	commit: Initial commit
-4d161511e5413dbda4f24a8b3ecd01b56a288980 4d161511e5413dbda4f24a8b3ecd01b56a288980 Song Keat <songkeat@gmail.com> 1757900727 +0800	checkout: moving from master to master
-4d161511e5413dbda4f24a8b3ecd01b56a288980 4d161511e5413dbda4f24a8b3ecd01b56a288980 Song Keat <songkeat@gmail.com> 1757900838 +0800	checkout: moving from master to master
-4d161511e5413dbda4f24a8b3ecd01b56a288980 c9e1cc13754c295447ceef5f3fb6c2b923e2e83d Song Keat <songkeat@gmail.com> 1757900970 +0800	rebase (start): checkout upstream/master
-c9e1cc13754c295447ceef5f3fb6c2b923e2e83d c5d90f8f4a977125ca2152d7d47ec9547c27e462 Song Keat <songkeat@gmail.com> 1757901549 +0800	rebase (continue): Initial commit
-c5d90f8f4a977125ca2152d7d47ec9547c27e462 c5d90f8f4a977125ca2152d7d47ec9547c27e462 Song Keat <songkeat@gmail.com> 1757901549 +0800	rebase (finish): returning to refs/heads/master
-c5d90f8f4a977125ca2152d7d47ec9547c27e462 c5d90f8f4a977125ca2152d7d47ec9547c27e462 Song Keat <songkeat@gmail.com> 1757901803 +0800	checkout: moving from master to master
