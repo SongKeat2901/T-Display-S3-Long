@@ -111,6 +111,7 @@ bool lastScaleConnected      = false;
 bool hasEverConnectedToScale = false;
 bool hasShownNoScaleMessage  = false;
 constexpr uint32_t SCALE_INIT_RETRY_MS = 2000;
+constexpr uint32_t FLUSH_STATUS_HOLD_MS = 2000;
 uint32_t lastScaleInitAttempt          = 0;
 String pendingScaleStatus;
 bool hasPendingScaleStatus = false;
@@ -588,6 +589,7 @@ void flushingFeature()
     return;
   }
 
+  flushMessageActive = false;
   setRelayState(true);          // Turn on the output pin
   startTimeFlushing = millis(); // Record the current time
   isFlushing = true;            // Set the flushing flag
@@ -739,6 +741,169 @@ void checkScaleStatus()
       hasPendingScaleStatus = false;
       flushMessageActive    = false;
     }
+  }
+}
+
+// ============================================================================
+//  Runtime helpers
+// ============================================================================
+static void handleFlushingCycle()
+{
+  if (!isFlushing)
+    return;
+
+  const unsigned long now       = millis();
+  const unsigned long elapsed   = now - startTimeFlushing;
+  const unsigned long remaining = (flushDuration > elapsed) ? (flushDuration - elapsed) : 0;
+
+  if (now - lastPrintTimeFlushing >= 1000)
+  {
+    lastPrintTimeFlushing = now;
+
+    if (!hasPendingScaleStatus && currentStatusText.length() > 0)
+    {
+      pendingScaleStatus    = currentStatusText;
+      hasPendingScaleStatus = true;
+    }
+
+    DEBUG_PRINT("Flushing... ");
+    DEBUG_PRINT(remaining / 1000);
+    DEBUG_PRINTLN(" seconds remaining");
+
+    const String labelText = "Flushing... " + String(remaining / 1000) + " seconds remaining";
+    setStatusLabels(labelText.c_str());
+  }
+
+  if (elapsed >= flushDuration)
+  {
+    setRelayState(false);
+    isFlushing = false;
+    DEBUG_PRINTLN("Flushing ended");
+    setStatusLabels("Flushing ended");
+
+    flushMessageActive    = true;
+    flushMessageHoldUntil = now + FLUSH_STATUS_HOLD_MS;
+  }
+}
+
+static void processPendingStatusQueue()
+{
+  if (isFlushing || !hasPendingScaleStatus)
+    return;
+
+  if (!flushMessageActive || millis() >= flushMessageHoldUntil)
+  {
+    setStatusLabels(pendingScaleStatus.c_str());
+    hasPendingScaleStatus = false;
+    flushMessageActive    = false;
+  }
+}
+
+static void updateScaleReadings()
+{
+  if (!scale.isConnected() || !scale.newWeightAvailable())
+    return;
+
+  currentWeight = scale.getWeight();
+
+  char buffer[10];
+  dtostrf(currentWeight, 5, 1, buffer);
+  lv_label_set_text(ui_ScaleLabel, buffer);
+
+  DEBUG_PRINT(currentWeight);
+
+  if (!shot.brewing)
+  {
+    DEBUG_PRINTLN("");
+    return;
+  }
+
+  if (shot.datapoints >= SHOT_HISTORY_CAP)
+  {
+    std::memmove(shot.time_s,   shot.time_s + 1,   (SHOT_HISTORY_CAP - 1) * sizeof(float));
+    std::memmove(shot.weight,   shot.weight + 1,   (SHOT_HISTORY_CAP - 1) * sizeof(float));
+    shot.datapoints = SHOT_HISTORY_CAP - 1;
+  }
+
+  const float nowSeconds = seconds_f() - shot.start_timestamp_s;
+  shot.time_s[shot.datapoints] = nowSeconds;
+  shot.weight[shot.datapoints] = currentWeight;
+  shot.shotTimer                = nowSeconds;
+  shot.datapoints++;
+
+  DEBUG_PRINT(" ");
+  DEBUG_PRINT(shot.shotTimer);
+
+  if (shot.shotTimer >= previousTimerValue + 0.01f)
+  {
+    dtostrf(shot.shotTimer, 5, 0, buffer);
+    lv_label_set_text(ui_TimerLabel, buffer);
+    previousTimerValue = shot.shotTimer;
+  }
+
+  calculateEndTime(&shot);
+  DEBUG_PRINT(" ");
+  DEBUG_PRINT(shot.expected_end_s);
+
+  const String labelText = "Expected end time @ " + String(shot.expected_end_s) + " s";
+  setStatusLabels(labelText.c_str());
+
+  DEBUG_PRINTLN("");
+}
+
+static void handleShotWatchdogs()
+{
+  if (shot.brewing || isFlushing)
+    setRelayState(true);
+  else
+  {
+    setRelayState(false);
+    previousTimerValue = 0.0f;
+  }
+
+  enforceRelayState();
+
+  if (shot.brewing && shot.shotTimer > MAX_SHOT_DURATION_S)
+  {
+    DEBUG_PRINTLN("Max brew duration reached");
+    setStatusLabels("Max brew duration reached");
+    stopBrew(false);
+  }
+
+  if (shot.brewing && shot.shotTimer >= shot.expected_end_s && shot.shotTimer > MIN_SHOT_DURATION_S)
+  {
+    DEBUG_PRINTLN("weight achieved");
+    setStatusLabels("Weight achieved");
+    stopBrew(false);
+  }
+
+  if (shot.start_timestamp_s && shot.end_s && currentWeight >= (goalWeight - weightOffset) &&
+      seconds_f() > shot.start_timestamp_s + shot.end_s + DRIP_DELAY_S)
+  {
+    shot.start_timestamp_s = 0;
+    shot.end_s             = 0;
+
+    DEBUG_PRINT("I detected a final weight of ");
+    DEBUG_PRINT(currentWeight);
+    DEBUG_PRINT("g. The goal was ");
+    DEBUG_PRINT(goalWeight);
+    DEBUG_PRINT("g with a negative offset of ");
+    DEBUG_PRINT(weightOffset);
+
+    if (abs(currentWeight - goalWeight + weightOffset) > MAX_OFFSET)
+    {
+      DEBUG_PRINT("g. Error assumed. Offset unchanged. ");
+      setStatusLabels("Error assumed. Offset unchanged.");
+    }
+    else
+    {
+      DEBUG_PRINT("g. Next time I'll create an offset of ");
+      weightOffset += currentWeight - goalWeight;
+      DEBUG_PRINT(weightOffset);
+      saveOffset(static_cast<int>(weightOffset * 10.0f));
+    }
+
+    DEBUG_PRINTLN("");
   }
 }
 
@@ -903,159 +1068,13 @@ void setup()
 
 void loop()
 {
-
-  // LVGL typical timer handler routine
   LVGLTimerHandlerRoutine();
-  // Check to ensure scale is connected, reconnect if failed
   checkScaleStatus();
-  // Send a heartbeat message to the scale periodically to maintain connection
   checkHeartBreat();
-  // Get Scale battery on first startup (got new way to update)
   if (firstBoot)
-  {
     getBatteryUpdate();
-  }
-
-  // Check for flushing request
-  if (isFlushing)
-  {
-    unsigned long currentTimeFlushing = millis();
-    unsigned long elapsedTimeFlushing = currentTimeFlushing - startTimeFlushing;
-    unsigned long remainingTimeFlushing = flushDuration - elapsedTimeFlushing;
-
-    if (currentTimeFlushing - lastPrintTimeFlushing >= 1000)
-    {
-      lastPrintTimeFlushing = currentTimeFlushing;
-      if (!hasPendingScaleStatus && currentStatusText.length() > 0)
-      {
-        pendingScaleStatus   = currentStatusText;
-        hasPendingScaleStatus = true;
-      }
-      DEBUG_PRINT("Flushing... ");
-      DEBUG_PRINT(remainingTimeFlushing / 1000); // Print remaining time in seconds
-      DEBUG_PRINTLN(" seconds remaining");
-
-      // Update the LVGL label
-      String labelText = "Flushing... " + String(remainingTimeFlushing / 1000) + " seconds remaining";
-      setStatusLabels(labelText.c_str());
-    }
-
-    // Check if x seconds have passed
-    if (elapsedTimeFlushing >= flushDuration)
-    {
-      setRelayState(false); // Turn off the output pin
-      isFlushing = false;   // Reset the flushing flag
-      DEBUG_PRINTLN("Flushing ended");
-      setStatusLabels("Flushing ended");
-      flushMessageActive    = true;
-      flushMessageHoldUntil = millis() + 2000;
-    }
-  }
-
-  // always call newWeightAvailable to actually receive the datapoint from the scale,
-  // otherwise getWeight() will return stale data
-  if (scale.isConnected() && scale.newWeightAvailable())
-  {
-    currentWeight = scale.getWeight();
-    char buffer[10]; // Make sure the buffer is large enough to hold the result
-    dtostrf(currentWeight, 5, 1, buffer);
-    lv_label_set_text(ui_ScaleLabel, buffer);
-
-    DEBUG_PRINT(currentWeight); // debug print weight
-
-    // update shot trajectory
-    if (shot.brewing)
-    {
-      if (shot.datapoints >= SHOT_HISTORY_CAP)
-      {
-        std::memmove(shot.time_s, shot.time_s + 1, (SHOT_HISTORY_CAP - 1) * sizeof(float));
-        std::memmove(shot.weight, shot.weight + 1, (SHOT_HISTORY_CAP - 1) * sizeof(float));
-        shot.datapoints = SHOT_HISTORY_CAP - 1;
-      }
-      shot.time_s[shot.datapoints] = seconds_f() - shot.start_timestamp_s;
-      shot.weight[shot.datapoints] = currentWeight;
-      shot.shotTimer = shot.time_s[shot.datapoints];
-      shot.datapoints++;
-
-      DEBUG_PRINT(" ");
-      DEBUG_PRINT(shot.shotTimer);
-
-      // update the UI timer label (maybe change to 100ms instead of 1)
-      if (shot.shotTimer >= (previousTimerValue + 0.01))
-      {
-        dtostrf(shot.shotTimer, 5, 0, buffer);
-        lv_label_set_text(ui_TimerLabel, buffer);
-        previousTimerValue = shot.shotTimer; // Update previous timer value
-      }
-
-      // get the likely end time of the shot
-      calculateEndTime(&shot);
-      DEBUG_PRINT(" ");
-      DEBUG_PRINT(shot.expected_end_s);
-
-      // Update the LVGL label
-      String labelText = "Expected end time @ " + String(shot.expected_end_s) + " s";
-      setStatusLabels(labelText.c_str());
-    }
-    DEBUG_PRINTLN("");
-  }
-
-  // if brewing state, turn on output relay 1 (solenoid)
-  if (shot.brewing == true || isFlushing)
-  {
-    setRelayState(true);
-  }
-  else
-  {
-    setRelayState(false);
-    previousTimerValue = 0;
-  }
-
-  enforceRelayState();
-
-  // Max duration reached
-  if (shot.brewing && shot.shotTimer > MAX_SHOT_DURATION_S)
-  {
-    DEBUG_PRINTLN("Max brew duration reached");
-    setStatusLabels("Max brew duration reached");
-    stopBrew(false);
-  }
-
-  // End shot
-  if (shot.brewing && shot.shotTimer >= shot.expected_end_s && shot.shotTimer > MIN_SHOT_DURATION_S)
-  {
-    DEBUG_PRINTLN("weight achieved");
-    setStatusLabels("Weight achieved");
-    stopBrew(false);
-  }
-
-  // Detect error of shot
-  if (shot.start_timestamp_s && shot.end_s && currentWeight >= (goalWeight - weightOffset) && seconds_f() > shot.start_timestamp_s + shot.end_s + DRIP_DELAY_S)
-  {
-    shot.start_timestamp_s = 0;
-    shot.end_s = 0;
-
-    DEBUG_PRINT("I detected a final weight of ");
-    DEBUG_PRINT(currentWeight);
-    DEBUG_PRINT("g. The goal was ");
-    DEBUG_PRINT(goalWeight);
-    DEBUG_PRINT("g with a negative offset of ");
-    DEBUG_PRINT(weightOffset);
-
-    if (abs(currentWeight - goalWeight + weightOffset) > MAX_OFFSET)
-    {
-      DEBUG_PRINT("g. Error assumed. Offset unchanged. ");
-      setStatusLabels("Error assumed. Offset unchanged.");
-    }
-    else
-    {
-      DEBUG_PRINT("g. Next time I'll create an offset of ");
-      weightOffset += currentWeight - goalWeight;
-      DEBUG_PRINT(weightOffset);
-
-      // Save offset
-      saveOffset(weightOffset * 10);
-    }
-    DEBUG_PRINTLN("");
-  }
+  handleFlushingCycle();
+  updateScaleReadings();
+  handleShotWatchdogs();
+  processPendingStatusQueue();
 }
