@@ -745,6 +745,11 @@ void setup()
   snprintf(prefixedBuffer, sizeof(prefixedBuffer), "%s g", buffer);
   lv_label_set_text(ui_PresetWeightLabel, prefixedBuffer);
 
+
+  DEBUG_PRINT("Flash size: "); DEBUG_PRINT(ESP.getFlashChipSize()); DEBUG_PRINTLN(" bytes");
+  DEBUG_PRINT("App partition: "); DEBUG_PRINT(ESP.getSketchSize()); DEBUG_PRINT(" used / "); DEBUG_PRINT(ESP.getSketchSize() + ESP.getFreeSketchSpace()); DEBUG_PRINTLN(" bytes total");
+  DEBUG_PRINT("Heap total: "); DEBUG_PRINT(ESP.getHeapSize()); DEBUG_PRINT(" bytes, free: "); DEBUG_PRINT(ESP.getFreeHeap()); DEBUG_PRINTLN(" bytes");
+  DEBUG_PRINT("PSRAM total: "); DEBUG_PRINT(ESP.getPsramSize()); DEBUG_PRINT(" bytes, free: "); DEBUG_PRINT(ESP.getFreePsram()); DEBUG_PRINTLN(" bytes");
   DEBUG_PRINTLN("Setup Completed");
 }
 
