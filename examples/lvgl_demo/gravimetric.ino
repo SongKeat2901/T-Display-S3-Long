@@ -107,6 +107,29 @@ const char *BRIGHTNESS_KEY = "brightness";
 #define DEBUG_PRINTLN(x) do { } while (0)
 #endif
 
+bool lastScaleConnected      = false;
+bool hasEverConnectedToScale = false;
+bool hasShownNoScaleMessage  = false;
+constexpr uint32_t SCALE_INIT_RETRY_MS = 2000;
+uint32_t lastScaleInitAttempt          = 0;
+String pendingScaleStatus;
+bool hasPendingScaleStatus = false;
+String currentStatusText;
+bool flushMessageActive    = false;
+uint32_t flushMessageHoldUntil = 0;
+bool relayState = false;
+
+static inline void setRelayState(bool high)
+{
+  int desired = high ? HIGH : LOW;
+  if (relayState == high && digitalRead(RELAY1) == desired)
+    return;
+  relayState = high;
+  digitalWrite(RELAY1, desired);
+  DEBUG_PRINT("Relay1 -> ");
+  DEBUG_PRINTLN(high ? "HIGH" : "LOW");
+}
+
 lv_obj_t *ui_cartext = nullptr;
 
 // -----------------------------------------------------------------------------
@@ -115,8 +138,25 @@ lv_obj_t *ui_cartext = nullptr;
 
 static inline void setStatusLabels(const char *text)
 {
+  if (currentStatusText == text)
+    return;
   lv_label_set_text(ui_SerialLabel, text);
   lv_label_set_text(ui_SerialLabel1, text);
+  currentStatusText = text;
+}
+
+static inline void queueScaleStatus(const char *text)
+{
+  if (isFlushing)
+  {
+    pendingScaleStatus   = text;
+    hasPendingScaleStatus = true;
+  }
+  else
+  {
+    setStatusLabels(text);
+    hasPendingScaleStatus = false;
+  }
 }
 
 static float seconds_f()
@@ -128,20 +168,59 @@ static void setBrewingState(bool brewing)
 {
   if (brewing)
   {
+    if (isFlushing)
+    {
+      DEBUG_PRINTLN("Flushing cancelled due to brew start");
+      setRelayState(false);
+      isFlushing = false;
+    }
+
+    if (!scale.isConnected())
+    {
+      queueScaleStatus("Scale not connected");
+      shot.brewing = false;
+      isFlushing   = false;
+      return;
+    }
+
     DEBUG_PRINTLN("shot started");
+    if (!scale.startTimer())
+    {
+      queueScaleStatus("Scale timer failed");
+      shot.brewing = false;
+      isFlushing   = false;
+      return;
+    }
+
+    if (!scale.tare())
+    {
+      queueScaleStatus("Scale tare failed");
+      if (scale.isConnected())
+      {
+        scale.stopTimer();
+      }
+      setRelayState(false);
+      shot.brewing = false;
+      isFlushing   = false;
+      return;
+    }
+
     shot.start_timestamp_s = seconds_f();
     shot.shotTimer         = 0.0f;
     shot.datapoints        = 0;
-    scale.startTimer();
-    scale.tare();
+
     DEBUG_PRINTLN("Weight Timer End");
+    setRelayState(true);
   }
   else
   {
     DEBUG_PRINTLN("ShotEnded");
     shot.end_s = seconds_f() - shot.start_timestamp_s;
-    scale.stopTimer();
-    digitalWrite(RELAY1, LOW);
+    if (scale.isConnected())
+    {
+      scale.stopTimer();
+    }
+    setRelayState(false);
   }
 }
 
@@ -209,12 +288,12 @@ static void enforceRelayState()
   if (shouldBeHigh && actualState == LOW)
   {
     DEBUG_PRINTLN("Relay corrected to HIGH");
-    digitalWrite(RELAY1, HIGH);
+    setRelayState(true);
   }
   else if (!shouldBeHigh && actualState == HIGH)
   {
     DEBUG_PRINTLN("Relay was HIGH unexpectedly, forcing LOW");
-    digitalWrite(RELAY1, LOW);
+    setRelayState(false);
   }
 }
 
@@ -372,6 +451,11 @@ void ui_event_FlushButton(lv_event_t *e)
   {
     if (!isFlushing)
     {
+      if (shot.brewing)
+      {
+        queueScaleStatus("Cannot flush while shot running");
+        return;
+      }
       flushingFeature();
     }
   }
@@ -426,7 +510,18 @@ void ui_event_ScaleResetButton(lv_event_t *e)
 
   if (event_code == LV_EVENT_CLICKED && (millis() - pressedAt) >= HUMAN_TOUCH_MIN_MS)
   {
-    scale.tare();
+    if (!scale.isConnected())
+    {
+      queueScaleStatus("Scale not connected");
+      return;
+    }
+
+    if (!scale.tare())
+    {
+      setStatusLabels("Scale tare failed");
+      return;
+    }
+
     setStatusLabels("Scale Tared.");
   }
 }
@@ -487,7 +582,13 @@ void ui_event_TimerResetButton(lv_event_t *e)
 
 void flushingFeature()
 {
-  digitalWrite(RELAY1, HIGH);   // Turn on the output pin
+  if (shot.brewing)
+  {
+    queueScaleStatus("Cannot flush during shot");
+    return;
+  }
+
+  setRelayState(true);          // Turn on the output pin
   startTimeFlushing = millis(); // Record the current time
   isFlushing = true;            // Set the flushing flag
   DEBUG_PRINTLN("Flushing started");
@@ -521,6 +622,10 @@ void saveWeight(int weight)
 
 void checkHeartBreat()
 {
+  if (!scale.isConnected())
+  {
+    return;
+  }
   if (scale.heartbeatRequired())
   {
     scale.heartbeat();
@@ -533,6 +638,10 @@ unsigned long previousMillisBattery = 0;
 
 void getBatteryUpdate()
 {
+  if (!scale.isConnected())
+  {
+    return;
+  }
   unsigned long currentMillisBattery = millis();
 
   if (currentMillisBattery - previousMillisBattery >= intervalBattery)
@@ -562,19 +671,44 @@ void getBatteryUpdate()
 
 void checkScaleStatus()
 {
-  if (!scale.isConnected())
+  bool connected = scale.isConnected();
+  uint32_t now   = millis();
+
+  if (!ui_BluetoothImage1 || !ui_BluetoothImage2 || !ui_SerialLabel)
   {
-    // Scale connected bluetooth icons
+    lastScaleConnected = connected;
+    return;
+  }
+
+  if (!connected)
+  {
     _ui_state_modify(ui_BluetoothImage1, LV_STATE_DISABLED, _UI_MODIFY_STATE_ADD);
     _ui_state_modify(ui_BluetoothImage2, LV_STATE_DISABLED, _UI_MODIFY_STATE_ADD);
-    setStatusLabels("Scale Not Connected");
 
-    scale.init();
+    if (!hasEverConnectedToScale)
+    {
+      if (!hasShownNoScaleMessage)
+      {
+        queueScaleStatus("Scale Not Connected");
+        hasShownNoScaleMessage = true;
+      }
+    }
+    else if (lastScaleConnected)
+    {
+      queueScaleStatus("Scale disconnected");
+    }
+
+    lastScaleConnected = false;
+
+    if (!isFlushing && ((now - lastScaleInitAttempt) >= SCALE_INIT_RETRY_MS || lastScaleInitAttempt == 0))
+    {
+      scale.init();
+      lastScaleInitAttempt = now;
+    }
 
     currentWeight = 0;
     firstConnectionNotificationPending = true;
 
-    // reset brew stage if lost connection
     if (shot.brewing)
     {
       stopBrew(false);
@@ -582,16 +716,29 @@ void checkScaleStatus()
   }
   else
   {
-    // Scale connected bluetooth icons
     _ui_state_modify(ui_BluetoothImage1, LV_STATE_DISABLED, _UI_MODIFY_STATE_REMOVE);
     _ui_state_modify(ui_BluetoothImage2, LV_STATE_DISABLED, _UI_MODIFY_STATE_REMOVE);
 
-    if (firstConnectionNotificationPending)
+    if (!lastScaleConnected)
     {
-      setStatusLabels("Scale Connected");
+      queueScaleStatus("Scale Connected");
     }
 
     firstConnectionNotificationPending = false;
+    lastScaleConnected                 = true;
+    hasEverConnectedToScale            = true;
+    hasShownNoScaleMessage             = false;
+    lastScaleInitAttempt               = now;
+  }
+
+  if (!isFlushing && hasPendingScaleStatus)
+  {
+    if (!flushMessageActive || millis() >= flushMessageHoldUntil)
+    {
+      setStatusLabels(pendingScaleStatus.c_str());
+      hasPendingScaleStatus = false;
+      flushMessageActive    = false;
+    }
   }
 }
 
@@ -654,7 +801,8 @@ void setup()
   // initialize the GPIO hardware
   // To add in progress
   pinMode(RELAY1, OUTPUT); // RELAY 1 Output
-  digitalWrite(RELAY1, LOW);
+  relayState = true; // force update on first set
+  setRelayState(false);
 
   // initialize the Bluetooth® Low Energy hardware
   BLE.begin();
@@ -778,6 +926,11 @@ void loop()
     if (currentTimeFlushing - lastPrintTimeFlushing >= 1000)
     {
       lastPrintTimeFlushing = currentTimeFlushing;
+      if (!hasPendingScaleStatus && currentStatusText.length() > 0)
+      {
+        pendingScaleStatus   = currentStatusText;
+        hasPendingScaleStatus = true;
+      }
       DEBUG_PRINT("Flushing... ");
       DEBUG_PRINT(remainingTimeFlushing / 1000); // Print remaining time in seconds
       DEBUG_PRINTLN(" seconds remaining");
@@ -790,16 +943,18 @@ void loop()
     // Check if x seconds have passed
     if (elapsedTimeFlushing >= flushDuration)
     {
-      digitalWrite(RELAY1, LOW); // Turn off the output pin
-      isFlushing = false;        // Reset the flushing flag
+      setRelayState(false); // Turn off the output pin
+      isFlushing = false;   // Reset the flushing flag
       DEBUG_PRINTLN("Flushing ended");
       setStatusLabels("Flushing ended");
+      flushMessageActive    = true;
+      flushMessageHoldUntil = millis() + 2000;
     }
   }
 
   // always call newWeightAvailable to actually receive the datapoint from the scale,
   // otherwise getWeight() will return stale data
-  if (scale.newWeightAvailable())
+  if (scale.isConnected() && scale.newWeightAvailable())
   {
     currentWeight = scale.getWeight();
     char buffer[10]; // Make sure the buffer is large enough to hold the result
@@ -848,11 +1003,11 @@ void loop()
   // if brewing state, turn on output relay 1 (solenoid)
   if (shot.brewing == true || isFlushing)
   {
-    digitalWrite(RELAY1, HIGH);
+    setRelayState(true);
   }
   else
   {
-    digitalWrite(RELAY1, LOW);
+    setRelayState(false);
     previousTimerValue = 0;
   }
 
