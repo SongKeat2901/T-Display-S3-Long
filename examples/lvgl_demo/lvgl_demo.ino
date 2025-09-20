@@ -90,10 +90,22 @@ unsigned long lastPrintTimeFlushing = 0;
 const unsigned long flushDuration   = 5000; // ms
 bool isFlushing                     = false;
 
+constexpr uint32_t HUMAN_TOUCH_MIN_MS = 50;
+
 Preferences preferences;
 const char *WEIGHT_KEY     = "weight";
 const char *OFFSET_KEY     = "offset";
 const char *BRIGHTNESS_KEY = "brightness";
+
+#define ENABLE_DEBUG_LOG 1
+
+#if ENABLE_DEBUG_LOG
+#define DEBUG_PRINT(x) Serial.print(x)
+#define DEBUG_PRINTLN(x) Serial.println(x)
+#else
+#define DEBUG_PRINT(x) do { } while (0)
+#define DEBUG_PRINTLN(x) do { } while (0)
+#endif
 
 lv_obj_t *ui_cartext = nullptr;
 
@@ -116,17 +128,17 @@ static void setBrewingState(bool brewing)
 {
   if (brewing)
   {
-    Serial.println("shot started");
+    DEBUG_PRINTLN("shot started");
     shot.start_timestamp_s = seconds_f();
     shot.shotTimer         = 0.0f;
     shot.datapoints        = 0;
     scale.startTimer();
     scale.tare();
-    Serial.println("Weight Timer End");
+    DEBUG_PRINTLN("Weight Timer End");
   }
   else
   {
-    Serial.println("ShotEnded");
+    DEBUG_PRINTLN("ShotEnded");
     shot.end_s = seconds_f() - shot.start_timestamp_s;
     scale.stopTimer();
     digitalWrite(RELAY1, LOW);
@@ -196,12 +208,12 @@ static void enforceRelayState()
 
   if (shouldBeHigh && actualState == LOW)
   {
-    Serial.println("Relay corrected to HIGH");
+    DEBUG_PRINTLN("Relay corrected to HIGH");
     digitalWrite(RELAY1, HIGH);
   }
   else if (!shouldBeHigh && actualState == HIGH)
   {
-    Serial.println("Relay was HIGH unexpectedly, forcing LOW");
+    DEBUG_PRINTLN("Relay was HIGH unexpectedly, forcing LOW");
     digitalWrite(RELAY1, LOW);
   }
 }
@@ -236,6 +248,14 @@ uint8_t read_touchpad_cmd[11] = {0xb5, 0xab, 0xa5, 0x5a, 0x0, 0x0, 0x0, 0x8};
 void my_touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data)
 {
   uint8_t buff[20] = {0};
+  static bool haveLastPoint        = false;
+  static lv_coord_t lastPointX     = 0;
+  static lv_coord_t lastPointY     = 0;
+  static constexpr uint8_t filterDepth = 2;
+  static lv_coord_t historyX[filterDepth] = {0};
+  static lv_coord_t historyY[filterDepth] = {0};
+  static uint8_t historyCount      = 0;
+  static uint8_t historyWriteIndex = 0;
 
   Wire.beginTransmission(0x3B);
   Wire.write(read_touchpad_cmd, 8);
@@ -245,24 +265,79 @@ void my_touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data)
     ;
   Wire.readBytes(buff, 8);
 
-  uint16_t pointX;
-  uint16_t pointY;
-  uint16_t type = 0;
+  uint16_t rawX = AXS_GET_POINT_X(buff, 0);
+  uint16_t rawY = AXS_GET_POINT_Y(buff, 0);
+  uint16_t type = AXS_GET_GESTURE_TYPE(buff);
 
-  type = AXS_GET_GESTURE_TYPE(buff);
-  pointX = AXS_GET_POINT_X(buff, 0);
-  pointY = AXS_GET_POINT_Y(buff, 0);
-
-  if (!type && (pointX || pointY))
+  if (!type && (rawX || rawY))
   {
-    pointX = (640 - pointX);
-    if (pointX > 640)
-      pointX = 640;
-    if (pointY > 180)
-      pointY = 180;
-    data->state = LV_INDEV_STATE_PR;
-    data->point.x = pointY;
-    data->point.y = pointX;
+    int32_t rotatedX = static_cast<int32_t>(EXAMPLE_LCD_V_RES - 1) - static_cast<int32_t>(rawX);
+    if (rotatedX < 0)
+      rotatedX = 0;
+    if (rotatedX >= EXAMPLE_LCD_V_RES)
+      rotatedX = EXAMPLE_LCD_V_RES - 1;
+
+    if (rawY >= EXAMPLE_LCD_H_RES)
+      rawY = EXAMPLE_LCD_H_RES - 1;
+
+    lv_coord_t finalX = static_cast<lv_coord_t>(rawY);
+    lv_coord_t finalY = static_cast<lv_coord_t>(rotatedX);
+    const lv_coord_t maxX = EXAMPLE_LCD_H_RES - 1;
+    const lv_coord_t maxY = EXAMPLE_LCD_V_RES - 1;
+
+    if (haveLastPoint)
+    {
+      lv_coord_t deltaX = finalX - lastPointX;
+      if (deltaX < 0)
+        deltaX = -deltaX;
+      if ((finalX <= 1 || finalX >= maxX) && deltaX > 6)
+      {
+        finalX = lastPointX;
+      }
+
+      lv_coord_t deltaY = finalY - lastPointY;
+      if (deltaY < 0)
+        deltaY = -deltaY;
+      if ((finalY <= 5 || finalY >= maxY - 5) && deltaY > 20)
+      {
+        finalY = lastPointY;
+      }
+
+      if (deltaX > 24)
+      {
+        finalX = lastPointX;
+      }
+
+      if (deltaY > 32)
+      {
+        finalY = lastPointY;
+      }
+    }
+
+    historyX[historyWriteIndex] = finalX;
+    historyY[historyWriteIndex] = finalY;
+    historyWriteIndex           = (historyWriteIndex + 1) % filterDepth;
+    if (historyCount < filterDepth)
+      historyCount++;
+
+    lv_coord_t accumX = 0;
+    lv_coord_t accumY = 0;
+    for (uint8_t i = 0; i < historyCount; i++)
+    {
+      accumX += historyX[i];
+      accumY += historyY[i];
+    }
+
+    lv_coord_t filteredX = historyCount ? (accumX / historyCount) : finalX;
+    lv_coord_t filteredY = historyCount ? (accumY / historyCount) : finalY;
+
+    lastPointX    = filteredX;
+    lastPointY    = filteredY;
+    haveLastPoint = true;
+
+    data->state   = LV_INDEV_STATE_PR;
+    data->point.x = lastPointX;
+    data->point.y = lastPointY;
 
     char buf[20] = {0};
     sprintf(buf, "(%d, %d)", data->point.x, data->point.y);
@@ -272,6 +347,9 @@ void my_touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data)
   else
   {
     data->state = LV_INDEV_STATE_REL;
+    haveLastPoint     = false;
+    historyCount      = 0;
+    historyWriteIndex = 0;
   }
 }
 
@@ -281,9 +359,16 @@ void my_touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data)
 
 void ui_event_FlushButton(lv_event_t *e)
 {
+  static uint32_t pressedAt = 0;
   lv_event_code_t event_code = lv_event_get_code(e);
-  lv_obj_t *target = lv_event_get_target(e);
-  if (event_code == LV_EVENT_CLICKED)
+
+  if (event_code == LV_EVENT_PRESSED)
+  {
+    pressedAt = millis();
+    return;
+  }
+
+  if (event_code == LV_EVENT_CLICKED && (millis() - pressedAt) >= HUMAN_TOUCH_MIN_MS)
   {
     if (!isFlushing)
     {
@@ -294,9 +379,16 @@ void ui_event_FlushButton(lv_event_t *e)
 
 void ui_event_StartButton(lv_event_t *e)
 {
+  static uint32_t pressedAt = 0;
   lv_event_code_t event_code = lv_event_get_code(e);
-  lv_obj_t *target = lv_event_get_target(e);
-  if (event_code == LV_EVENT_CLICKED)
+
+  if (event_code == LV_EVENT_PRESSED)
+  {
+    pressedAt = millis();
+    return;
+  }
+
+  if (event_code == LV_EVENT_CLICKED && (millis() - pressedAt) >= HUMAN_TOUCH_MIN_MS)
   {
     setStatusLabels("Start Button Pressed");
     startBrew();
@@ -305,9 +397,16 @@ void ui_event_StartButton(lv_event_t *e)
 
 void ui_event_StopButton(lv_event_t *e)
 {
+  static uint32_t pressedAt = 0;
   lv_event_code_t event_code = lv_event_get_code(e);
-  lv_obj_t *target = lv_event_get_target(e);
-  if (event_code == LV_EVENT_CLICKED)
+
+  if (event_code == LV_EVENT_PRESSED)
+  {
+    pressedAt = millis();
+    return;
+  }
+
+  if (event_code == LV_EVENT_CLICKED && (millis() - pressedAt) >= HUMAN_TOUCH_MIN_MS)
   {
     setStatusLabels("Stop Button Pressed");
     stopBrew(false);
@@ -316,11 +415,17 @@ void ui_event_StopButton(lv_event_t *e)
 
 void ui_event_ScaleResetButton(lv_event_t *e)
 {
+  static uint32_t pressedAt = 0;
   lv_event_code_t event_code = lv_event_get_code(e);
-  lv_obj_t *target = lv_event_get_target(e);
-  if (event_code == LV_EVENT_CLICKED)
+
+  if (event_code == LV_EVENT_PRESSED)
   {
-    // scale.tare(); if tare twice in a row, for old acaia lunar, the controller will freeze - reason unknow
+    pressedAt = millis();
+    return;
+  }
+
+  if (event_code == LV_EVENT_CLICKED && (millis() - pressedAt) >= HUMAN_TOUCH_MIN_MS)
+  {
     scale.tare();
     setStatusLabels("Scale Tared.");
   }
@@ -350,17 +455,24 @@ void ui_event_BacklightSlider(lv_event_t *e)
     int brightnessValue = lv_slider_get_value(target);
     brightness = map(brightnessValue, 0, 100, 70, 255);
     saveBrightness(brightnessValue); // Save 0-100% brightness value
-    Serial.print("Brightness value saved @ ");
-    Serial.println(brightnessValue);
+    DEBUG_PRINT("Brightness value saved @ ");
+    DEBUG_PRINTLN(brightnessValue);
     analogWrite(TFT_BL, brightness); // PWM based on 0-255
   }
 }
 
 void ui_event_TimerResetButton(lv_event_t *e)
 {
+  static uint32_t pressedAt = 0;
   lv_event_code_t event_code = lv_event_get_code(e);
-  lv_obj_t *target = lv_event_get_target(e);
-  if (event_code == LV_EVENT_CLICKED)
+
+  if (event_code == LV_EVENT_PRESSED)
+  {
+    pressedAt = millis();
+    return;
+  }
+
+  if (event_code == LV_EVENT_CLICKED && (millis() - pressedAt) >= HUMAN_TOUCH_MIN_MS)
   {
     char buffer[5];
     shot.shotTimer = 0;
@@ -378,7 +490,7 @@ void flushingFeature()
   digitalWrite(RELAY1, HIGH);   // Turn on the output pin
   startTimeFlushing = millis(); // Record the current time
   isFlushing = true;            // Set the flushing flag
-  Serial.println("Flushing started");
+  DEBUG_PRINTLN("Flushing started");
   enforceRelayState();
 }
 
@@ -430,14 +542,14 @@ void getBatteryUpdate()
     // Check the battery status
     if (scale.getBattery())
     {
-      Serial.println("Sent Get Battery Request Completed");
+      DEBUG_PRINTLN("Sent Get Battery Request Completed");
     }
   }
   if (scale.updateBattery())
   {
-    Serial.print("Current Scale Battery Level @ ");
-    Serial.print(scale.batteryValue());
-    Serial.print("%");
+    DEBUG_PRINT("Current Scale Battery Level @ ");
+    DEBUG_PRINT(scale.batteryValue());
+    DEBUG_PRINT("%");
     firstBoot = false;
 
     if (scale.batteryValue() < 10)
@@ -506,7 +618,7 @@ void setup()
   Serial.begin(115200);
   delay(5000); // delay wait for the serial port to get ready
 
-  Serial.println("Serial Started");
+  DEBUG_PRINTLN("Serial Started");
 
   preferences.begin("myApp", false);                       // Open the preferences with a namespace and read-only flag
   brightness = preferences.getInt(BRIGHTNESS_KEY, 0);      // Read the brightness value from preferences
@@ -514,29 +626,29 @@ void setup()
   weightOffset = preferences.getInt(OFFSET_KEY, 0) / 10.0; // Read the offset value from preferences
   preferences.end();                                       // Close the preferences
 
-  Serial.print("Brightness read from preferences: ");
-  Serial.println(brightness);
-  Serial.print("Goal Weight retrieved: ");
-  Serial.println(goalWeight);
-  Serial.print("Offset retrieved: ");
-  Serial.println(weightOffset);
+  DEBUG_PRINT("Brightness read from preferences: ");
+  DEBUG_PRINTLN(brightness);
+  DEBUG_PRINT("Goal Weight retrieved: ");
+  DEBUG_PRINTLN(goalWeight);
+  DEBUG_PRINT("Offset retrieved: ");
+  DEBUG_PRINTLN(weightOffset);
 
   if ((goalWeight < 10) || (goalWeight > 200)) // If preferences isn't initialized and has an unreasonable weight/offset, default to 36g/1.5g
   {
     goalWeight = 36;
-    Serial.println("Goal Weight set to: " + String(goalWeight) + " g");
+    DEBUG_PRINTLN("Goal Weight set to: " + String(goalWeight) + " g");
   }
 
   if (weightOffset > MAX_OFFSET)
   {
     weightOffset = 1.5;
-    Serial.println("Offset set to: " + String(weightOffset) + " g");
+    DEBUG_PRINTLN("Offset set to: " + String(weightOffset) + " g");
   }
 
   if ((brightness < 0) || (brightness > 100)) // If preferences isn't initialized set brightness to 50%
   {
     brightness = 50;
-    Serial.println("Backlight set to: Default @ " + String(brightness) + " %");
+    DEBUG_PRINTLN("Backlight set to: Default @ " + String(brightness) + " %");
   }
 
   // initialize the GPIO hardware
@@ -552,7 +664,7 @@ void setup()
   BLE.addService(weightService);
   weightCharacteristic.writeValue(36);
   BLE.advertise();
-  Serial.println("Bluetooth® device active, waiting for connections...");
+  DEBUG_PRINTLN("Bluetooth® device active, waiting for connections...");
 
   pinMode(TOUCH_RES, OUTPUT);
   digitalWrite(TOUCH_RES, HIGH);
@@ -579,7 +691,7 @@ void setup()
     {
       while (1)
       {
-        Serial.println("buf NULL");
+        DEBUG_PRINTLN("buf NULL");
         delay(500);
       }
     }
@@ -589,7 +701,7 @@ void setup()
     {
       while (1)
       {
-        Serial.println("buf NULL");
+        DEBUG_PRINTLN("buf NULL");
         delay(500);
       }
     }
@@ -633,7 +745,7 @@ void setup()
   snprintf(prefixedBuffer, sizeof(prefixedBuffer), "%s g", buffer);
   lv_label_set_text(ui_PresetWeightLabel, prefixedBuffer);
 
-  Serial.println("Setup Completed");
+  DEBUG_PRINTLN("Setup Completed");
 }
 
 void loop()
@@ -661,9 +773,9 @@ void loop()
     if (currentTimeFlushing - lastPrintTimeFlushing >= 1000)
     {
       lastPrintTimeFlushing = currentTimeFlushing;
-      Serial.print("Flushing... ");
-      Serial.print(remainingTimeFlushing / 1000); // Print remaining time in seconds
-      Serial.println(" seconds remaining");
+      DEBUG_PRINT("Flushing... ");
+      DEBUG_PRINT(remainingTimeFlushing / 1000); // Print remaining time in seconds
+      DEBUG_PRINTLN(" seconds remaining");
 
       // Update the LVGL label
       String labelText = "Flushing... " + String(remainingTimeFlushing / 1000) + " seconds remaining";
@@ -675,7 +787,7 @@ void loop()
     {
       digitalWrite(RELAY1, LOW); // Turn off the output pin
       isFlushing = false;        // Reset the flushing flag
-      Serial.println("Flushing ended");
+      DEBUG_PRINTLN("Flushing ended");
       setStatusLabels("Flushing ended");
     }
   }
@@ -689,7 +801,7 @@ void loop()
     dtostrf(currentWeight, 5, 1, buffer);
     lv_label_set_text(ui_ScaleLabel, buffer);
 
-    Serial.print(currentWeight); // debug print weight
+    DEBUG_PRINT(currentWeight); // debug print weight
 
     // update shot trajectory
     if (shot.brewing)
@@ -705,8 +817,8 @@ void loop()
       shot.shotTimer = shot.time_s[shot.datapoints];
       shot.datapoints++;
 
-      Serial.print(" ");
-      Serial.print(shot.shotTimer);
+      DEBUG_PRINT(" ");
+      DEBUG_PRINT(shot.shotTimer);
 
       // update the UI timer label (maybe change to 100ms instead of 1)
       if (shot.shotTimer >= (previousTimerValue + 0.01))
@@ -718,14 +830,14 @@ void loop()
 
       // get the likely end time of the shot
       calculateEndTime(&shot);
-      Serial.print(" ");
-      Serial.print(shot.expected_end_s);
+      DEBUG_PRINT(" ");
+      DEBUG_PRINT(shot.expected_end_s);
 
       // Update the LVGL label
       String labelText = "Expected end time @ " + String(shot.expected_end_s) + " s";
       setStatusLabels(labelText.c_str());
     }
-    Serial.println();
+    DEBUG_PRINTLN("");
   }
 
   // if brewing state, turn on output relay 1 (solenoid)
@@ -744,7 +856,7 @@ void loop()
   // Max duration reached
   if (shot.brewing && shot.shotTimer > MAX_SHOT_DURATION_S)
   {
-    Serial.println("Max brew duration reached");
+    DEBUG_PRINTLN("Max brew duration reached");
     setStatusLabels("Max brew duration reached");
     stopBrew(false);
   }
@@ -752,7 +864,7 @@ void loop()
   // End shot
   if (shot.brewing && shot.shotTimer >= shot.expected_end_s && shot.shotTimer > MIN_SHOT_DURATION_S)
   {
-    Serial.println("weight achieved");
+    DEBUG_PRINTLN("weight achieved");
     setStatusLabels("Weight achieved");
     stopBrew(false);
   }
@@ -763,27 +875,27 @@ void loop()
     shot.start_timestamp_s = 0;
     shot.end_s = 0;
 
-    Serial.print("I detected a final weight of ");
-    Serial.print(currentWeight);
-    Serial.print("g. The goal was ");
-    Serial.print(goalWeight);
-    Serial.print("g with a negative offset of ");
-    Serial.print(weightOffset);
+    DEBUG_PRINT("I detected a final weight of ");
+    DEBUG_PRINT(currentWeight);
+    DEBUG_PRINT("g. The goal was ");
+    DEBUG_PRINT(goalWeight);
+    DEBUG_PRINT("g with a negative offset of ");
+    DEBUG_PRINT(weightOffset);
 
     if (abs(currentWeight - goalWeight + weightOffset) > MAX_OFFSET)
     {
-      Serial.print("g. Error assumed. Offset unchanged. ");
+      DEBUG_PRINT("g. Error assumed. Offset unchanged. ");
       setStatusLabels("Error assumed. Offset unchanged.");
     }
     else
     {
-      Serial.print("g. Next time I'll create an offset of ");
+      DEBUG_PRINT("g. Next time I'll create an offset of ");
       weightOffset += currentWeight - goalWeight;
-      Serial.print(weightOffset);
+      DEBUG_PRINT(weightOffset);
 
       // Save offset
       saveOffset(weightOffset * 10);
     }
-    Serial.println();
+    DEBUG_PRINTLN("");
   }
 }
