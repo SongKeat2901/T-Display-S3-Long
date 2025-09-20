@@ -57,7 +57,7 @@ lv_obj_set_align( ui_Container16, LV_ALIGN_CENTER );
 lv_obj_clear_flag( ui_Container16, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE );    /// Flags
 
 ui_BacklightImage = lv_img_create(ui_Container16);
-lv_img_set_src(ui_BacklightImage, &ui_img_806972598);
+lv_img_set_src(ui_BacklightImage, &ui_img_light_png);
 lv_obj_set_width( ui_BacklightImage, LV_SIZE_CONTENT);  /// 1
 lv_obj_set_height( ui_BacklightImage, LV_SIZE_CONTENT);   /// 1
 lv_obj_set_align( ui_BacklightImage, LV_ALIGN_CENTER );
@@ -119,7 +119,7 @@ lv_obj_set_align( ui_Container17, LV_ALIGN_CENTER );
 lv_obj_clear_flag( ui_Container17, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE );    /// Flags
 
 ui_ScaleImage1 = lv_img_create(ui_Container17);
-lv_img_set_src(ui_ScaleImage1, &ui_img_1992534686);
+lv_img_set_src(ui_ScaleImage1, &ui_img_weight_png);
 lv_obj_set_width( ui_ScaleImage1, LV_SIZE_CONTENT);  /// 1
 lv_obj_set_height( ui_ScaleImage1, LV_SIZE_CONTENT);   /// 1
 lv_obj_set_align( ui_ScaleImage1, LV_ALIGN_CENTER );
@@ -186,7 +186,7 @@ lv_obj_set_align( ui_Container13, LV_ALIGN_CENTER );
 lv_obj_clear_flag( ui_Container13, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE );    /// Flags
 
 ui_SerialImage1 = lv_img_create(ui_Container10);
-lv_img_set_src(ui_SerialImage1, &ui_img_2251575);
+lv_img_set_src(ui_SerialImage1, &ui_img_1495795081);
 lv_obj_set_width( ui_SerialImage1, 24);
 lv_obj_set_height( ui_SerialImage1, 24);
 lv_obj_set_align( ui_SerialImage1, LV_ALIGN_CENTER );
@@ -226,10 +226,10 @@ lv_obj_add_flag( ui_ReturnFromSettingButton, LV_OBJ_FLAG_SCROLL_ON_FOCUS );   //
 lv_obj_clear_flag( ui_ReturnFromSettingButton, LV_OBJ_FLAG_SCROLLABLE );    /// Flags
 lv_obj_set_style_bg_color(ui_ReturnFromSettingButton, lv_color_hex(0x1A1A1A), LV_PART_MAIN | LV_STATE_DEFAULT );
 lv_obj_set_style_bg_opa(ui_ReturnFromSettingButton, 255, LV_PART_MAIN| LV_STATE_DEFAULT);
-lv_obj_set_style_bg_img_src( ui_ReturnFromSettingButton, &ui_img_1111506397, LV_PART_MAIN | LV_STATE_DEFAULT );
+lv_obj_set_style_bg_img_src( ui_ReturnFromSettingButton, &ui_img_return_png, LV_PART_MAIN | LV_STATE_DEFAULT );
 
 ui_BluetoothImage2 = lv_img_create(ui_SettingScreen);
-lv_img_set_src(ui_BluetoothImage2, &ui_img_249472744);
+lv_img_set_src(ui_BluetoothImage2, &ui_img_420894227);
 lv_obj_set_width( ui_BluetoothImage2, LV_SIZE_CONTENT);  /// 1
 lv_obj_set_height( ui_BluetoothImage2, LV_SIZE_CONTENT);   /// 1
 lv_obj_set_x( ui_BluetoothImage2, -2 );
